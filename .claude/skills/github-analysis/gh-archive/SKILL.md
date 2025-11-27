@@ -559,9 +559,103 @@ else:
 - Consider using monthly aggregated tables for long-term analysis
 - Partition queries by date and run in parallel
 
+### Force Push Recovery (Zero-Commit PushEvents)
+
+**Scenario**: Developer accidentally commits secrets, then force pushes to "delete" the commit. The commit remains accessible on GitHub, but finding it requires knowing the SHA.
+
+**Background**: When a developer runs `git reset --hard HEAD~1 && git push --force`, Git removes the reference to that commit from the branch. However:
+- GitHub stores these "dangling" commits indefinitely
+- GitHub Archive records the `before` SHA in PushEvent payloads
+- Force pushes appear as PushEvents with zero commits (empty commits array)
+
+**Step 1: Find All Zero-Commit PushEvents (Organization-Wide)**
+```sql
+SELECT
+    created_at,
+    actor.login,
+    repo.name,
+    JSON_EXTRACT_SCALAR(payload, '$.before') as deleted_commit_sha,
+    JSON_EXTRACT_SCALAR(payload, '$.head') as current_head,
+    JSON_EXTRACT_SCALAR(payload, '$.ref') as branch
+FROM `githubarchive.day.2025*`
+WHERE
+    repo.name LIKE 'target-org/%'
+    AND type = 'PushEvent'
+    AND JSON_EXTRACT_SCALAR(payload, '$.size') = '0'
+ORDER BY created_at DESC
+```
+
+**Step 2: Search for Specific Repository**
+```sql
+SELECT
+    created_at,
+    actor.login,
+    JSON_EXTRACT_SCALAR(payload, '$.before') as deleted_commit_sha,
+    JSON_EXTRACT_SCALAR(payload, '$.head') as after_sha,
+    JSON_EXTRACT_SCALAR(payload, '$.ref') as branch
+FROM `githubarchive.day.202506*`
+WHERE
+    repo.name = 'org/repository'
+    AND type = 'PushEvent'
+    AND JSON_EXTRACT_SCALAR(payload, '$.size') = '0'
+ORDER BY created_at
+```
+
+**Step 3: Bulk Recovery Query**
+```python
+query = """
+SELECT
+    created_at,
+    actor.login,
+    repo.name,
+    JSON_EXTRACT_SCALAR(payload, '$.before') as deleted_sha,
+    JSON_EXTRACT_SCALAR(payload, '$.ref') as branch
+FROM `githubarchive.year.2024`
+WHERE
+    type = 'PushEvent'
+    AND JSON_EXTRACT_SCALAR(payload, '$.size') = '0'
+    AND repo.name LIKE 'target-org/%'
+"""
+
+results = client.query(query)
+deleted_commits = []
+for row in results:
+    deleted_commits.append({
+        'timestamp': row.created_at,
+        'actor': row.actor_login,
+        'repo': row.repo_name,
+        'deleted_sha': row.deleted_sha,
+        'branch': row.branch
+    })
+
+print(f"Found {len(deleted_commits)} force-pushed commits to investigate")
+```
+
+**Evidence Recovery**:
+- **`before` SHA**: The commit that was "deleted" by the force push
+- **`head` SHA**: The commit the branch was reset to
+- **`ref`**: Which branch was force pushed
+- **`actor.login`**: Who performed the force push
+- **Commit Access**: Use recovered SHA to access commit via GitHub API or web UI
+
+**Forensic Applications**:
+- **Secret Scanning**: Scan recovered commits for leaked credentials, API keys, tokens
+- **Incident Timeline**: Identify when secrets were committed and when they were "hidden"
+- **Attribution**: Determine who committed secrets and who attempted to cover them up
+- **Compliance**: Prove data exposure window for breach notifications
+
+**Real Example**: Security researcher Sharon Brizinov scanned all zero-commit PushEvents since 2020 across GitHub, recovering "deleted" commits and scanning them for secrets. This technique uncovered credentials worth $25k in bug bounties, including an admin-level GitHub PAT with access to all Istio repositories (36k stars, used by Google, IBM, Red Hat). The token could have enabled a massive supply-chain attack.
+
+**Important Notes**:
+- Force pushing does NOT delete commits from GitHub - they remain accessible via SHA
+- GitHub Archive preserves the `before` SHA indefinitely
+- Zero-commit PushEvents are the forensic fingerprint of history rewrites
+- This technique provides 100% coverage of "deleted" commits (vs brute-forcing 4-char SHA prefixes)
+
 ## Learn More
 
 - **GH Archive Documentation**: https://www.gharchive.org/
 - **GitHub Event Types Schema**: https://docs.github.com/en/rest/using-the-rest-api/github-event-types
 - **BigQuery Documentation**: https://cloud.google.com/bigquery/docs
 - **BigQuery SQL Reference**: https://cloud.google.com/bigquery/docs/reference/standard-sql/query-syntax
+- **Force Push Scanner Tool**: https://github.com/trufflesecurity/force-push-scanner
