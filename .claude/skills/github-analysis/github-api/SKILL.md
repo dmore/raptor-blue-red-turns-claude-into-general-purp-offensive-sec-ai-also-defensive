@@ -1,6 +1,6 @@
 ---
 name: Github API Analysis
-description: Access GitHub data directly via REST API and web interface for forensic analysis. Use when you have commit SHAs from GitHub Archive and need to retrieve actual commit content, diffs, or patches. Includes techniques for accessing "deleted" commits that remain on GitHub servers.
+description: Access GitHub data directly via REST API and web interface for forensic analysis. Use when you have commit SHAs and need to retrieve actual commit content, diffs, or patches. Includes techniques for accessing "deleted" commits that remain on GitHub servers.
 version: 1.0
 author: mbrg
 tags:
@@ -12,17 +12,17 @@ tags:
 
 # GitHub API Forensics
 
-**Purpose**: Access commit content, diffs, and metadata directly from GitHub when you have commit SHAs from GitHub Archive or other sources. Includes methods for retrieving "deleted" commits that remain accessible on GitHub servers.
+**Purpose**: Access commit content, diffs, and metadata directly from GitHub when you have commit SHAs. Includes methods for retrieving "deleted" commits that remain accessible on GitHub servers.
 
 ## When to Use This Skill
 
-- You have commit SHAs from GitHub Archive and need actual code content
+- You have commit SHAs and need actual code content
 - Investigating commits that were force-pushed over ("deleted")
 - Need commit diffs, patches, or full file contents
-- Scanning recovered commits for secrets or malicious code
-- Cross-referencing GitHub Archive metadata with actual commit content
+- Verifying commit authorship or metadata
+- Retrieving content from dangling commits
 
-**Workflow**: GitHub Archive (find SHAs) → GitHub API (retrieve content)
+**SHA Sources**: GitHub Archive, git reflog, CI/CD logs, PR comments, issue references, external archives, security reports.
 
 ## Core Principles
 
@@ -118,13 +118,13 @@ curl -H "Accept: application/vnd.github+json" \
       "email": "dev@example.com",
       "date": "2025-06-15T14:23:11Z"
     },
-    "message": "Accidentally committed secrets"
+    "message": "Commit message here"
   },
   "files": [
     {
-      "filename": ".env",
+      "filename": "src/config.js",
       "status": "added",
-      "patch": "@@ -0,0 +1,3 @@\n+AWS_KEY=AKIA..."
+      "patch": "@@ -0,0 +1,3 @@\n+// config"
     }
   ]
 }
@@ -152,36 +152,23 @@ git fetch origin <COMMIT_SHA>
 
 # View the commit
 git show FETCH_HEAD
-```
 
-**Scan for Secrets with TruffleHog**:
-```bash
-# After fetching, scan the commit and its history
-trufflehog git file://. --since-commit=<COMMIT_SHA> --only-verified
+# View specific file from that commit
+git show FETCH_HEAD:path/to/file.txt
 ```
 
 **Why This Works**:
 - `--filter=blob:none`: Omits file contents initially (fast clone)
 - `--no-checkout`: Doesn't populate working directory
 - `git fetch origin <SHA>`: Retrieves specific commit even if "deleted"
-- TruffleHog pulls blobs on-demand during scan
+- Blobs are fetched on-demand when you access them
 
 ## Investigation Patterns
 
-### Scanning Recovered Commits for Secrets
+### Batch Download Patches
 
-**Scenario**: You recovered commit SHAs from GitHub Archive's zero-commit PushEvents. Now scan them for leaked credentials.
+**Scenario**: You have a list of commit SHAs to investigate and need their content.
 
-**Step 1: Export SHAs from BigQuery**
-```python
-# From GitHub Archive query results
-deleted_commits = [
-    {"repo": "org/repo1", "sha": "abc123..."},
-    {"repo": "org/repo2", "sha": "def456..."},
-]
-```
-
-**Step 2: Batch Download Patches**
 ```python
 import requests
 import time
@@ -195,20 +182,18 @@ def download_commit_patch(repo, sha, token=None):
         return response.text
     return None
 
-for commit in deleted_commits:
+# Download patches for a list of commits
+commits = [
+    {"repo": "org/repo1", "sha": "abc123..."},
+    {"repo": "org/repo2", "sha": "def456..."},
+]
+
+for commit in commits:
     patch = download_commit_patch(commit["repo"], commit["sha"])
     if patch:
         with open(f"{commit['sha'][:8]}.patch", "w") as f:
             f.write(patch)
     time.sleep(0.5)  # Rate limit courtesy
-```
-
-**Step 3: Scan with TruffleHog**
-```bash
-# Scan all downloaded patches
-for patch in *.patch; do
-    trufflehog filesystem --file="$patch" --only-verified
-done
 ```
 
 ### Verifying Commit Authorship
@@ -249,55 +234,11 @@ curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
 - Verified: Whether commit has valid GPG signature
 - Discrepancies between author/committer warrant investigation
 
-### Bulk Commit Analysis
-
-**Scenario**: Analyze multiple commits from a recovered branch or force push history.
-
-```python
-import requests
-import json
-
-def analyze_commits(repo, shas, token):
-    results = []
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json"
-    }
-
-    for sha in shas:
-        url = f"https://api.github.com/repos/{repo}/commits/{sha}"
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            data = response.json()
-            results.append({
-                "sha": sha,
-                "author": data["commit"]["author"]["email"],
-                "date": data["commit"]["author"]["date"],
-                "message": data["commit"]["message"][:100],
-                "files_changed": len(data.get("files", [])),
-                "additions": sum(f.get("additions", 0) for f in data.get("files", [])),
-                "deletions": sum(f.get("deletions", 0) for f in data.get("files", []))
-            })
-
-        # Respect rate limits
-        remaining = int(response.headers.get("x-ratelimit-remaining", 0))
-        if remaining < 100:
-            print(f"Rate limit low: {remaining} remaining")
-
-    return results
-
-# Usage
-commits = analyze_commits("org/repo", recovered_shas, token)
-for c in commits:
-    print(f"{c['sha'][:8]} | {c['date']} | {c['author']} | +{c['additions']}/-{c['deletions']}")
-```
-
 ## Real-World Examples
 
 ### Istio Supply Chain Attack Prevention
 
-**Discovery**: Security researcher used GitHub Archive to find zero-commit PushEvents, recovering commit SHAs of "deleted" commits. Using GitHub API to fetch commit content, discovered a leaked GitHub PAT token.
+**Discovery**: Security researcher Sharon Brizinov used GitHub Archive to find zero-commit PushEvents, recovering commit SHAs of "deleted" commits. Using GitHub API to fetch commit content, discovered a leaked GitHub PAT token.
 
 **Impact**: The token had admin access to ALL Istio repositories (36k stars, used by Google, IBM, Red Hat). Could have enabled:
 - Reading environment variables and secrets
@@ -359,5 +300,3 @@ From scanning recovered force-pushed commits, the most impactful secrets found i
 
 - **GitHub REST API**: https://docs.github.com/en/rest
 - **GitHub Commit API**: https://docs.github.com/en/rest/commits/commits
-- **TruffleHog**: https://github.com/trufflesecurity/trufflehog
-- **Force Push Scanner**: https://github.com/trufflesecurity/force-push-scanner
