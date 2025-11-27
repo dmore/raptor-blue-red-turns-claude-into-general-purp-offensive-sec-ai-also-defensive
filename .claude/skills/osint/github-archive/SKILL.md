@@ -275,6 +275,60 @@ JSON_EXTRACT_SCALAR(payload, '$.issue.body')
 
 ## Investigation Patterns
 
+### Deleted Issue & PR Text Recovery
+
+**Scenario**: Attacker creates issues or PRs containing evidence of intent, social engineering, or malicious content, then deletes them to hide tracks. You need to recover the full text content.
+
+**Step 1: Recover Deleted Issue Content**
+```sql
+SELECT
+    created_at,
+    actor.login,
+    JSON_EXTRACT_SCALAR(payload, '$.action') as action,
+    JSON_EXTRACT_SCALAR(payload, '$.issue.number') as issue_number,
+    JSON_EXTRACT_SCALAR(payload, '$.issue.title') as title,
+    JSON_EXTRACT_SCALAR(payload, '$.issue.body') as body
+FROM `githubarchive.day.20250713`
+WHERE
+    repo.name = 'aws/aws-toolkit-vscode'
+    AND actor.login = 'lkmanka58'
+    AND type = 'IssuesEvent'
+ORDER BY created_at
+```
+
+**Step 2: Recover Deleted PR Description**
+```sql
+SELECT
+    created_at,
+    actor.login,
+    JSON_EXTRACT_SCALAR(payload, '$.action') as action,
+    JSON_EXTRACT_SCALAR(payload, '$.pull_request.number') as pr_number,
+    JSON_EXTRACT_SCALAR(payload, '$.pull_request.title') as title,
+    JSON_EXTRACT_SCALAR(payload, '$.pull_request.body') as body,
+    JSON_EXTRACT_SCALAR(payload, '$.pull_request.merged') as merged
+FROM `githubarchive.day.202506*`
+WHERE
+    repo.name = 'target/repository'
+    AND actor.login = 'suspected-actor'
+    AND type = 'PullRequestEvent'
+ORDER BY created_at
+```
+
+**Evidence Recovery**:
+- **Issue/PR Title**: Full title text preserved in `$.issue.title` or `$.pull_request.title`
+- **Issue/PR Body**: Complete body text preserved in `$.issue.body` or `$.pull_request.body`
+- **Comments**: `IssueCommentEvent` preserves comment text in `$.comment.body`
+- **Actor Attribution**: `actor.login` identifies who created the content
+- **Timestamps**: Exact creation time in `created_at`
+
+**Forensic Value**:
+- Recover evidence of attacker intent, frustration, or coordination
+- Identify social engineering attempts via PR descriptions
+- Reconstruct full context of deleted reconnaissance activity
+- Preserve evidence for incident response reports
+
+**Real Example**: Amazon Q investigation recovered deleted issue content from `lkmanka58`. The issue titled "aws amazon donkey aaaaaaiii aaaaaaaiii" contained an angry rant calling Amazon Q "deceptive" and "scripted fakery" - evidence of attacker frustration that preceded the malicious commits by 12 hours. The full issue body was preserved in GitHub Archive despite deletion from github.com.
+
 ### Deleted PRs
 
 **Scenario**: Media claims attacker submitted a PR in "late June" containing malicious code, but PR is now deleted and cannot be found on github.com.
