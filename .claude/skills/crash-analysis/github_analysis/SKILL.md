@@ -320,30 +320,159 @@ ORDER BY created_at
 
 ### Deleted Branch Reconstruction
 
-TBD
+**Scenario**: Attacker creates development branch with malicious code, pushes commits, then deletes branch after merging or to cover tracks.
+
+**Forensic Approach**:
+```sql
+-- Step 1: Find branch creation and deletion events
+SELECT
+    type,
+    created_at,
+    actor.login,
+    JSON_EXTRACT_SCALAR(payload, '$.ref') as branch_name,
+    JSON_EXTRACT_SCALAR(payload, '$.ref_type') as ref_type
+FROM `githubarchive.day.2025*`
+WHERE
+    repo.name = 'target/repository'
+    AND type IN ('CreateEvent', 'DeleteEvent')
+    AND JSON_EXTRACT_SCALAR(payload, '$.ref_type') = 'branch'
+ORDER BY created_at
+```
+
+**Commit SHA Recovery**:
+```sql
+-- Step 2: Extract ALL commit SHAs, messages, and authors from deleted branch
+SELECT
+    created_at,
+    actor.login as pusher,
+    JSON_EXTRACT_SCALAR(payload, '$.ref') as branch_ref,
+    JSON_EXTRACT(payload, '$.commits') as commits_json,
+    -- Extract individual commit details
+    JSON_EXTRACT_SCALAR(commit, '$.sha') as commit_sha,
+    JSON_EXTRACT_SCALAR(commit, '$.message') as commit_message,
+    JSON_EXTRACT_SCALAR(commit, '$.author.name') as author_name,
+    JSON_EXTRACT_SCALAR(commit, '$.author.email') as author_email
+FROM `githubarchive.day.2025*`,
+UNNEST(JSON_EXTRACT_ARRAY(payload, '$.commits')) as commit
+WHERE
+    repo.name = 'target/repository'
+    AND type = 'PushEvent'
+    AND JSON_EXTRACT_SCALAR(payload, '$.ref') = 'refs/heads/deleted-branch-name'
+ORDER BY created_at
+```
+
+**Complete Reconstruction Example**:
+```json
+{
+  "branch_lifecycle": {
+    "created": {
+      "timestamp": "2025-06-13T09:15:30Z",
+      "actor": "threat-actor",
+      "branch": "feature-malicious"
+    },
+    "commits": [
+      {
+        "push_time": "2025-06-13T09:18:45Z",
+        "pusher": "threat-actor",
+        "commits": [
+          {
+            "sha": "9dadab2630bd88e86792ee3ba08c5750f217f9e8",
+            "message": "Initial malicious workflow",
+            "author": "threat-actor <threat@example.com>"
+          },
+          {
+            "sha": "d1c694cf59e2c34ad8a15358a514d106cc54bc37",
+            "message": "Add credential harvesting code",
+            "author": "threat-actor <threat@example.com>"
+          }
+        ]
+      },
+      {
+        "push_time": "2025-06-13T09:45:12Z",
+        "pusher": "threat-actor",
+        "commits": [
+          {
+            "sha": "311a3c525d6831dd08107108f69a9b89ff457022",
+            "message": "Cleanup attribution indicators",
+            "author": "threat-actor <threat@example.com>"
+          }
+        ]
+      }
+    ],
+    "deleted": {
+      "timestamp": "2025-06-13T10:35:20Z",
+      "actor": "threat-actor"
+    }
+  }
+}
+```
+
+**Evidence Recovery**:
+- **Commit SHAs**: All commit identifiers permanently recorded in PushEvent payload
+- **Commit Messages**: Full commit messages preserved in commits array
+- **Author Metadata**: Name and email from commit author field
+- **Pusher Identity**: Actor who executed the push operation
+- **Temporal Sequence**: Exact timestamps for each push operation
+- **Branch Lifecycle**: Complete creation-to-deletion timeline
+
+**Forensic Value**: Even after branch deletion, commit SHAs can be used to:
+- Search for commits in forked repositories
+- Check if commits were merged into other branches
+- Search external code archives (Software Heritage, etc.)
+- Reconstruct complete attack development timeline
+
+**Real Example**: In the Amazon Q investigation, lkmanka58's code_whisperer repository used branch-based development. GitHub Archive preserved complete commit history including SHAs (9dadab2, d1c694c, 311a3c5) with full messages and author details. Even if the repository or branch had been deleted, the PushEvent records would have allowed complete reconstruction of the AWS credential testing workflow development timeline over the 47-minute development session on June 13, 2025.
 
 ### Automation vs Direct API Attribution
 
-**Investigation Challenge**: Did malicious commits come from compromised workflow or direct API abuse?
+**Scenario**: Malicious commits appear under automation account name. Did they come from compromised GitHub Actions workflow, or direct API abuse with stolen token?
 
-**GitHub Archive Approach**:
+**Forensic Approach**:
 ```sql
--- Search for workflows during commit window
-SELECT type, created_at, actor.login, payload
+-- Search for workflow events during malicious commit window
+SELECT
+    type,
+    created_at,
+    actor.login,
+    JSON_EXTRACT_SCALAR(payload, '$.workflow_run.name') as workflow_name,
+    JSON_EXTRACT_SCALAR(payload, '$.workflow_run.conclusion') as conclusion
 FROM `githubarchive.day.20250713`
 WHERE
     repo.name = 'aws/aws-toolkit-vscode'
     AND type IN ('WorkflowRunEvent', 'WorkflowJobEvent')
     AND created_at >= '2025-07-13T20:25:00'
     AND created_at <= '2025-07-13T20:35:00'
+ORDER BY created_at
 ```
 
-**Evidence Found**:
+**Normal Automation Baseline**:
+```sql
+-- Analyze normal automation patterns on same day
+SELECT
+    type,
+    created_at,
+    actor.login,
+    JSON_EXTRACT_SCALAR(payload, '$.workflow_run.name') as workflow_name
+FROM `githubarchive.day.20250713`
+WHERE
+    repo.name = 'aws/aws-toolkit-vscode'
+    AND actor.login = 'aws-toolkit-automation'
+    AND type = 'WorkflowRunEvent'
+ORDER BY created_at
+```
+
+**Evidence Analysis**:
 - **ZERO workflow events** during malicious commit time (20:30:24 UTC)
-- Normal automation had 18 workflows on same day
-- All normal workflows clustered in 20:48-21:02 UTC window
-- 9+ hour abnormal gap in automation pattern
+- **18 total workflows** by aws-toolkit-automation on same day
+- **All legitimate workflows** clustered in 20:48-21:02 UTC window
+- **9+ hour gap** between morning activity and evening burst
+- **Abnormal silence** during critical attack infrastructure deployment
 
-**Investigation Outcome**: Direct API attack proven via workflow absence
+**Forensic Conclusion**:
+The complete absence of WorkflowRunEvent or WorkflowJobEvent records during the malicious commit push window proves the attack used direct GitHub API calls, not compromised automation workflows.
 
-**Key Lesson**: Negative evidence (absence of expected workflows) can be as powerful as positive evidence when analyzing automation systems.
+**Investigation Outcome**: Direct API attack vector confirmed through negative evidence analysis
+
+**Real Example**: Amazon Q investigation revealed malicious commit 678851bbe9776228f55e0460e66a6167ac2a1685 pushed at 20:30:24 UTC by aws-toolkit-automation. GitHub Archive showed ZERO workflow activity during this time, while the same account had 18 workflows earlier that day. This gap proved the attacker used a stolen token for direct API calls, bypassing workflow systems entirely to minimize forensic traces.
+
+**Key Lesson**: Negative evidence (absence of expected workflows) can be as powerful as positive evidence when analyzing automation systems. Pattern disruption in normally-consistent automation activity is a strong indicator of direct API abuse.
