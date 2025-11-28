@@ -1,5 +1,0 @@
-{
-  "env": {
-    "CLAUDE_ENV_FILE": ".env"
-  }
-}
