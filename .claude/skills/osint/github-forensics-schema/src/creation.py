@@ -1466,14 +1466,27 @@ def create_ioc(
     ioc_type: IOCType,
     value: str,
     source_url: HttpUrl,
-    confidence: str = "medium",
     extracted_from: str | None = None,
 ) -> IOC:
-    """Create an IOC from a security vendor report.
+    """Create an IOC by verifying it exists in the vendor report.
 
-    IOCs are extracted from vendor blogs/reports - source_url is required.
-    Use enrich_ioc() to verify if artifacts still exist on GitHub/Wayback.
+    Fetches source_url and confirms IOC value appears in content.
+    Raises ValueError if IOC cannot be verified at source.
     """
+    import requests
+
+    # Fetch and verify at source
+    try:
+        resp = requests.get(str(source_url), timeout=30)
+        resp.raise_for_status()
+        content = resp.text
+    except Exception as e:
+        raise ValueError(f"Failed to fetch source URL {source_url}: {e}")
+
+    # Check if IOC value appears in the page
+    if value.lower() not in content.lower():
+        raise ValueError(f"IOC value '{value[:50]}' not found in source {source_url}")
+
     now = datetime.now(timezone.utc)
 
     return IOC(
@@ -1487,56 +1500,11 @@ def create_ioc(
         ),
         ioc_type=ioc_type,
         value=value,
-        confidence=confidence,
+        confidence="confirmed",
         first_seen=now,
         last_seen=now,
         extracted_from=extracted_from,
     )
-
-
-def verify_ioc_at_source(ioc: IOC) -> IOC:
-    """Verify IOC exists in the source vendor blog/report.
-
-    Fetches the source_url and checks if the IOC value appears in content.
-    Returns IOC with updated confidence if verified.
-    """
-    import requests
-
-    if not ioc.verification.url:
-        return ioc
-
-    try:
-        resp = requests.get(str(ioc.verification.url), timeout=30)
-        resp.raise_for_status()
-        content = resp.text.lower()
-
-        # Check if IOC value appears in the page
-        value_to_find = ioc.value.lower()
-        verified = value_to_find in content
-
-        if not verified:
-            return ioc
-
-        return IOC(
-            evidence_id=ioc.evidence_id,
-            original_when=ioc.original_when,
-            original_who=ioc.original_who,
-            original_what=ioc.original_what,
-            observed_when=ioc.observed_when,
-            observed_by=ioc.observed_by,
-            observed_what=f"{ioc.observed_what} [verified in source]",
-            repository=ioc.repository,
-            verification=ioc.verification,
-            is_deleted=ioc.is_deleted,
-            ioc_type=ioc.ioc_type,
-            value=ioc.value,
-            confidence="confirmed",
-            first_seen=ioc.first_seen,
-            last_seen=ioc.last_seen,
-            extracted_from=ioc.extracted_from,
-        )
-    except Exception:
-        return ioc
 
 
 # =============================================================================
@@ -1680,23 +1648,20 @@ class EvidenceFactory:
         ioc_type: IOCType | str,
         value: str,
         source_url: str,
-        confidence: str = "medium",
         extracted_from: str | None = None,
     ) -> IOC:
-        """Create an IOC from a security vendor report."""
+        """Create an IOC by verifying it exists in vendor report.
+
+        Raises ValueError if IOC cannot be verified at source.
+        """
         if isinstance(ioc_type, str):
             ioc_type = IOCType(ioc_type)
         return create_ioc(
             ioc_type=ioc_type,
             value=value,
             source_url=HttpUrl(source_url),
-            confidence=confidence,
             extracted_from=extracted_from,
         )
-
-    def verify_ioc(self, ioc: IOC) -> IOC:
-        """Verify IOC exists in the source vendor blog/report."""
-        return verify_ioc_at_source(ioc)
 
     # GH Archive recovery methods
 

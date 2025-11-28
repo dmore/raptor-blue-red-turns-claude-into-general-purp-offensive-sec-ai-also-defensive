@@ -57,7 +57,6 @@ from .creation import (
     create_fork_observations,
     create_snapshot_observation,
     create_ioc,
-    verify_ioc_at_source,
 )
 from .schema import (
     # Enums
@@ -202,5 +201,4 @@ __all__ = [
     "create_fork_observations",
     "create_snapshot_observation",
     "create_ioc",
-    "verify_ioc_at_source",
 ]
