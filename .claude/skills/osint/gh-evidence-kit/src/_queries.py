@@ -90,13 +90,6 @@ class ForkQuery(BaseModel):
     repo: RepositoryQuery
 
 
-class WikiQuery(BaseModel):
-    """Query for a wiki page observation."""
-
-    repo: RepositoryQuery
-    page_name: str = "Home"
-
-
 class WaybackQuery(BaseModel):
     """Query for Wayback Machine snapshots."""
 

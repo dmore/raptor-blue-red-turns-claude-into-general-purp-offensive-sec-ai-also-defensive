@@ -410,14 +410,6 @@ class FileObservation(Observation):
     size_bytes: int = 0
 
 
-class WikiObservation(Observation):
-    """Wiki page."""
-
-    observation_type: Literal["wiki"] = "wiki"
-    page_name: str
-    content: str
-
-
 class ForkObservation(Observation):
     """Fork relationship."""
 
@@ -517,7 +509,6 @@ AnyObservation = (
     CommitObservation
     | IssueObservation
     | FileObservation
-    | WikiObservation
     | ForkObservation
     | BranchObservation
     | TagObservation

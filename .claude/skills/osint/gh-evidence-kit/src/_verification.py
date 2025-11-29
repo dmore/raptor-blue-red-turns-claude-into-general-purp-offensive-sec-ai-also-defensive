@@ -11,9 +11,6 @@ IMPLEMENTATION STATUS:
 - Security Vendor: Implemented (URL and IOC value verification)
 - GH Archive: Partial - requires BigQuery credentials (gracefully skips if unavailable)
 - Local Git: Not implemented - requires local repository path
-
-IMPORTANT: This module uses the client classes from _clients.py
-to ensure consistent data fetching between factory creation and verification.
 """
 
 from __future__ import annotations
@@ -27,11 +24,9 @@ if TYPE_CHECKING:
         Observation,
         VerificationResult,
     )
+    from ._clients import GitHubClient, GHArchiveClient
 
 from ._schema import EvidenceSource
-
-# Import client classes from dedicated module
-from ._clients import GitHubClient, GHArchiveClient
 
 
 def verify_event(event: "Event") -> "VerificationResult":
@@ -110,30 +105,24 @@ def verify_all(evidence_list: Sequence["AnyEvidence"]) -> "VerificationResult":
 
 # =============================================================================
 # GITHUB API VERIFICATION
-#
-# Uses the same GitHubClient class as the factory to ensure
-# consistent data fetching between creation and verification.
 # =============================================================================
 
 
-# Shared client instance (lazy-initialized)
-_github_client: GitHubClient | None = None
+def _create_github_client() -> "GitHubClient":
+    """Create a new GitHub client."""
+    from ._clients import GitHubClient
+    return GitHubClient()
 
 
-def _get_github_client() -> GitHubClient:
-    """Get or create shared GitHub client."""
-    global _github_client
-    if _github_client is None:
-        _github_client = GitHubClient()
-    return _github_client
-
-
-def _verify_github_observation(observation: "Observation") -> "VerificationResult":
-    """Verify observation against GitHub API using shared client."""
+def _verify_github_observation(
+    observation: "Observation",
+    client: "GitHubClient | None" = None,
+) -> "VerificationResult":
+    """Verify observation against GitHub API."""
     errors: list[str] = []
-    client = _get_github_client()
+    if client is None:
+        client = _create_github_client()
 
-    # Dispatch based on observation type
     obs_type = getattr(observation, "observation_type", None)
 
     try:
@@ -150,7 +139,7 @@ def _verify_github_observation(observation: "Observation") -> "VerificationResul
         elif obs_type == "release":
             return _verify_release_observation(observation, client, errors)
         elif obs_type == "fork":
-            return _verify_fork_observation(observation, client, errors)
+            return _verify_fork_observation(observation, errors)
         else:
             # No specific verification - just check URL is accessible
             if observation.verification.url:
@@ -159,15 +148,18 @@ def _verify_github_observation(observation: "Observation") -> "VerificationResul
                 resp.raise_for_status()
             return True, []
     except Exception as e:
-        if observation.is_deleted:
-            # Expected - item is marked as deleted
-            return True, []
+        if getattr(observation, "is_deleted", False):
+            return True, []  # Expected - item is marked as deleted
         errors.append(f"Verification failed: {e}")
         return False, errors
 
 
-def _verify_commit_observation(observation: "Observation", client: GitHubClient, errors: list[str]) -> "VerificationResult":
-    """Verify commit observation using shared client."""
+def _verify_commit_observation(
+    observation: "Observation",
+    client: "GitHubClient",
+    errors: list[str],
+) -> "VerificationResult":
+    """Verify commit observation."""
     repo = observation.repository
     if not repo:
         errors.append("No repository specified")
@@ -178,11 +170,9 @@ def _verify_commit_observation(observation: "Observation", client: GitHubClient,
         errors.append("No SHA specified")
         return False, errors
 
-    # Use the SAME client method as factory creation
     data = client.get_commit(repo.owner, repo.name, sha)
     commit = data.get("commit", {})
 
-    # Compare fields
     if data.get("sha") != sha:
         errors.append(f"SHA mismatch: expected {sha}, got {data.get('sha')}")
 
@@ -199,8 +189,12 @@ def _verify_commit_observation(observation: "Observation", client: GitHubClient,
     return len(errors) == 0, errors
 
 
-def _verify_issue_observation(observation: "Observation", client: GitHubClient, errors: list[str]) -> "VerificationResult":
-    """Verify issue/PR observation using shared client."""
+def _verify_issue_observation(
+    observation: "Observation",
+    client: "GitHubClient",
+    errors: list[str],
+) -> "VerificationResult":
+    """Verify issue/PR observation."""
     repo = observation.repository
     if not repo:
         errors.append("No repository specified")
@@ -213,13 +207,11 @@ def _verify_issue_observation(observation: "Observation", client: GitHubClient, 
 
     is_pr = getattr(observation, "is_pull_request", False)
 
-    # Use the SAME client methods as factory creation
     if is_pr:
         data = client.get_pull_request(repo.owner, repo.name, number)
     else:
         data = client.get_issue(repo.owner, repo.name, number)
 
-    # Compare fields
     if data.get("number") != number:
         errors.append(f"Number mismatch: expected {number}, got {data.get('number')}")
 
@@ -237,8 +229,13 @@ def _verify_issue_observation(observation: "Observation", client: GitHubClient, 
     return len(errors) == 0, errors
 
 
-def _verify_file_observation(observation: "Observation", client: GitHubClient, errors: list[str]) -> "VerificationResult":
-    """Verify file observation using shared client."""
+def _verify_file_observation(
+    observation: "Observation",
+    client: "GitHubClient",
+    errors: list[str],
+) -> "VerificationResult":
+    """Verify file observation."""
+    import base64
     import hashlib
 
     repo = observation.repository
@@ -252,12 +249,9 @@ def _verify_file_observation(observation: "Observation", client: GitHubClient, e
         return False, errors
 
     ref = getattr(observation, "branch", None) or "HEAD"
-
-    # Use the SAME client method as factory creation
     data = client.get_file(repo.owner, repo.name, file_path, ref)
 
     if hasattr(observation, "content_hash") and observation.content_hash:
-        import base64
         content = ""
         if data.get("content"):
             content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
@@ -268,8 +262,12 @@ def _verify_file_observation(observation: "Observation", client: GitHubClient, e
     return len(errors) == 0, errors
 
 
-def _verify_branch_observation(observation: "Observation", client: GitHubClient, errors: list[str]) -> "VerificationResult":
-    """Verify branch observation using shared client."""
+def _verify_branch_observation(
+    observation: "Observation",
+    client: "GitHubClient",
+    errors: list[str],
+) -> "VerificationResult":
+    """Verify branch observation."""
     repo = observation.repository
     if not repo:
         errors.append("No repository specified")
@@ -280,7 +278,6 @@ def _verify_branch_observation(observation: "Observation", client: GitHubClient,
         errors.append("No branch name specified")
         return False, errors
 
-    # Use the SAME client method as factory creation
     data = client.get_branch(repo.owner, repo.name, branch_name)
 
     if hasattr(observation, "head_sha"):
@@ -291,8 +288,12 @@ def _verify_branch_observation(observation: "Observation", client: GitHubClient,
     return len(errors) == 0, errors
 
 
-def _verify_tag_observation(observation: "Observation", client: GitHubClient, errors: list[str]) -> "VerificationResult":
-    """Verify tag observation using shared client."""
+def _verify_tag_observation(
+    observation: "Observation",
+    client: "GitHubClient",
+    errors: list[str],
+) -> "VerificationResult":
+    """Verify tag observation."""
     repo = observation.repository
     if not repo:
         errors.append("No repository specified")
@@ -303,7 +304,6 @@ def _verify_tag_observation(observation: "Observation", client: GitHubClient, er
         errors.append("No tag name specified")
         return False, errors
 
-    # Use the SAME client method as factory creation
     data = client.get_tag(repo.owner, repo.name, tag_name)
 
     if hasattr(observation, "target_sha"):
@@ -314,8 +314,12 @@ def _verify_tag_observation(observation: "Observation", client: GitHubClient, er
     return len(errors) == 0, errors
 
 
-def _verify_release_observation(observation: "Observation", client: GitHubClient, errors: list[str]) -> "VerificationResult":
-    """Verify release observation using shared client."""
+def _verify_release_observation(
+    observation: "Observation",
+    client: "GitHubClient",
+    errors: list[str],
+) -> "VerificationResult":
+    """Verify release observation."""
     repo = observation.repository
     if not repo:
         errors.append("No repository specified")
@@ -326,19 +330,19 @@ def _verify_release_observation(observation: "Observation", client: GitHubClient
         errors.append("No tag name specified")
         return False, errors
 
-    # Use the SAME client method as factory creation
     data = client.get_release(repo.owner, repo.name, tag_name)
 
     if data.get("tag_name") != tag_name:
-        errors.append(f"Tag name mismatch")
+        errors.append("Tag name mismatch")
 
     return len(errors) == 0, errors
 
 
-def _verify_fork_observation(observation: "Observation", client: GitHubClient, errors: list[str]) -> "VerificationResult":
-    """Verify fork observation."""
-    # Forks verification would require listing all forks
-    # For now, just verify the fork URL is accessible
+def _verify_fork_observation(
+    observation: "Observation",
+    errors: list[str],
+) -> "VerificationResult":
+    """Verify fork observation by checking URL accessibility."""
     if observation.verification.url:
         import requests
         resp = requests.get(str(observation.verification.url), timeout=30)
@@ -350,47 +354,34 @@ def _verify_fork_observation(observation: "Observation", client: GitHubClient, e
 # GH ARCHIVE VERIFICATION
 # =============================================================================
 
-# Shared GH Archive client (lazy-initialized)
-_gharchive_client: GHArchiveClient | None = None
 
-
-def _get_gharchive_client() -> GHArchiveClient | None:
-    """Get or create shared GH Archive client. Returns None if credentials unavailable."""
-    global _gharchive_client
-    if _gharchive_client is None:
-        try:
-            _gharchive_client = GHArchiveClient()
-            # Test if we can create a client (will fail if no credentials)
-            _gharchive_client._get_client()
-        except Exception:
-            # No credentials available - return None
-            return None
-    return _gharchive_client
+def _create_gharchive_client() -> "GHArchiveClient | None":
+    """Create a new GH Archive client. Returns None if credentials unavailable."""
+    from ._clients import GHArchiveClient
+    try:
+        client = GHArchiveClient()
+        client._get_client()  # Test if credentials work
+        return client
+    except Exception:
+        return None
 
 
 def _verify_gharchive_event(event: "Event") -> "VerificationResult":
-    """Verify event against GH Archive BigQuery.
-
-    Requires BigQuery credentials via GOOGLE_APPLICATION_CREDENTIALS.
-    If credentials are not available, returns success with a note.
-    """
+    """Verify event against GH Archive BigQuery."""
     errors: list[str] = []
 
     if not event.verification.bigquery_table:
         errors.append("No BigQuery table specified for GH Archive verification")
         return False, errors
 
-    client = _get_gharchive_client()
+    client = _create_gharchive_client()
     if client is None:
-        # No credentials - can't verify but don't fail
         return True, ["GH Archive verification skipped - no BigQuery credentials"]
 
-    # Extract timestamp from event.when
     timestamp = event.when.strftime("%Y%m%d%H%M")
     repo = event.repository.full_name if event.repository else None
 
     try:
-        # Query GH Archive for matching events
         rows = client.query_events(
             repo=repo,
             actor=event.who.login if event.who else None,
@@ -401,7 +392,6 @@ def _verify_gharchive_event(event: "Event") -> "VerificationResult":
             errors.append(f"No matching event found in GH Archive for timestamp {timestamp}")
             return False, errors
 
-        # Found matching event(s)
         return True, []
 
     except Exception as e:
@@ -410,25 +400,19 @@ def _verify_gharchive_event(event: "Event") -> "VerificationResult":
 
 
 def _verify_gharchive_observation(observation: "Observation") -> "VerificationResult":
-    """Verify observation against GH Archive BigQuery.
-
-    Requires BigQuery credentials via GOOGLE_APPLICATION_CREDENTIALS.
-    If credentials are not available, returns success with a note.
-    """
+    """Verify observation against GH Archive BigQuery."""
     errors: list[str] = []
 
     if not observation.verification.bigquery_table:
         errors.append("No BigQuery table specified for GH Archive verification")
         return False, errors
 
-    client = _get_gharchive_client()
+    client = _create_gharchive_client()
     if client is None:
         return True, ["GH Archive verification skipped - no BigQuery credentials"]
 
-    # For observations, check using the verification query if provided
     query = observation.verification.query
     if query:
-        # TODO: Execute custom query when needed
         return True, ["GH Archive observation verification not fully implemented"]
 
     return True, []
@@ -450,12 +434,9 @@ def _verify_wayback_observation(observation: "Observation") -> "VerificationResu
         return False, errors
 
     try:
-        # Query CDX API to verify snapshots exist
         url = observation.verification.url
         resp = requests.get(str(url), timeout=30)
         resp.raise_for_status()
-
-        # If we got here, the CDX query succeeded
         return True, []
 
     except requests.RequestException as e:
@@ -484,7 +465,6 @@ def _verify_security_vendor_observation(observation: "Observation") -> "Verifica
         resp.raise_for_status()
         content = resp.text
 
-        # For IOCs, verify the value appears in the page
         obs_type = getattr(observation, "observation_type", None)
         if obs_type == "ioc":
             value = getattr(observation, "value", None)
@@ -500,33 +480,15 @@ def _verify_security_vendor_observation(observation: "Observation") -> "Verifica
 
 
 # =============================================================================
-# GIT LOCAL VERIFICATION
-#
-# Note: Local git verification is NOT implemented because:
-# 1. It requires knowing the local repository path
-# 2. Evidence objects don't store the local path (they store GitHub URLs)
-# 3. The use case (verifying evidence from a clone) is rare
-#
-# If needed, users can manually verify by running git commands.
+# GIT LOCAL VERIFICATION (Not implemented)
 # =============================================================================
 
 
 def _verify_git_event(event: "Event") -> "VerificationResult":
-    """Verify event against local git repository.
-
-    Not implemented - local git verification requires a repository path
-    which isn't part of the evidence schema. Evidence is created from
-    public sources (GitHub API, GH Archive) not local clones.
-
-    Returns:
-        Always returns (True, [note]) to not block verification.
-    """
+    """Not implemented - local git requires repository path."""
     return True, ["Local git verification not supported - use GitHub API source instead"]
 
 
 def _verify_git_observation(observation: "Observation") -> "VerificationResult":
-    """Verify observation against local git repository.
-
-    Not implemented - see _verify_git_event for rationale.
-    """
+    """Not implemented - local git requires repository path."""
     return True, ["Local git verification not supported - use GitHub API source instead"]

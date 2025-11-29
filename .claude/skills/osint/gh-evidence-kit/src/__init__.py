@@ -15,7 +15,7 @@ Usage:
     pr = factory.pull_request("aws", "aws-toolkit-vscode", 7710)
 
     # Verified from GH Archive BigQuery
-    events = factory.events_from_gharchive(from_date="20250713", repo="aws/aws-toolkit-vscode")
+    events = factory.events_from_gharchive(timestamp="202507132037", repo="aws/aws-toolkit-vscode")
 
     # Verified IOC (fetches source URL to confirm value exists)
     ioc = factory.ioc(IOCType.COMMIT_SHA, "678851b...", source_url="https://...")
@@ -28,23 +28,7 @@ Type hints only (for static analysis):
     from src.types import CommitObservation, IssueObservation
 """
 
-from ._creation import (
-    # Factory - THE ONLY WAY to create verified evidence
-    EvidenceFactory,
-    # Query Models - For type hints in factory method signatures
-    RepositoryQuery,
-    CommitQuery,
-    IssueQuery,
-    FileQuery,
-    BranchQuery,
-    TagQuery,
-    ReleaseQuery,
-    ForkQuery,
-    WikiQuery,
-    WaybackQuery,
-    GHArchiveQuery,
-)
-
+from ._creation import EvidenceFactory
 from ._store import EvidenceStore
 from ._verification import verify_all
 
@@ -91,7 +75,6 @@ def load_evidence_from_json(data: dict) -> "AnyEvidence":
         CommitObservation,
         IssueObservation,
         FileObservation,
-        WikiObservation,
         ForkObservation,
         BranchObservation,
         TagObservation,
@@ -127,7 +110,6 @@ def load_evidence_from_json(data: dict) -> "AnyEvidence":
             "commit": CommitObservation,
             "issue": IssueObservation,
             "file": FileObservation,
-            "wiki": WikiObservation,
             "fork": ForkObservation,
             "branch": BranchObservation,
             "tag": TagObservation,
@@ -154,18 +136,6 @@ __all__ = [
     "EvidenceStore",
     # Verification - Validate evidence against sources
     "verify_all",
-    # Query Models (for type hints)
-    "RepositoryQuery",
-    "CommitQuery",
-    "IssueQuery",
-    "FileQuery",
-    "BranchQuery",
-    "TagQuery",
-    "ReleaseQuery",
-    "ForkQuery",
-    "WikiQuery",
-    "WaybackQuery",
-    "GHArchiveQuery",
     # Enums
     "EvidenceSource",
     "EventType",
