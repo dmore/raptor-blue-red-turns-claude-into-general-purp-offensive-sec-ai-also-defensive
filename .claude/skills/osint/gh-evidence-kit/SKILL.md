@@ -162,6 +162,70 @@ factory.ioc(IOCType.EMAIL, "attacker@example.com", "https://vendor.com/report")
 
 Available: `COMMIT_SHA`, `FILE_PATH`, `FILE_HASH`, `CODE_SNIPPET`, `EMAIL`, `USERNAME`, `REPOSITORY`, `TAG_NAME`, `BRANCH_NAME`, `WORKFLOW_NAME`, `IP_ADDRESS`, `DOMAIN`, `URL`, `API_KEY`, `SECRET`
 
+## Testing
+
+### Run Unit Tests
+
+```bash
+cd .claude/skills/osint/gh-evidence-kit
+pip install -r requirements.txt
+pytest tests/ -v --ignore=tests/test_integration.py
+```
+
+### Run Integration Tests (Optional)
+
+Integration tests hit real external services (GitHub API, BigQuery, vendor URLs):
+
+```bash
+# All integration tests
+pytest tests/test_integration.py -v -m integration
+
+# Skip integration tests in CI
+pytest tests/ -v -m "not integration"
+```
+
+**Note**: GitHub API integration tests use 60 req/hr unauthenticated rate limit. BigQuery tests require credentials (see below).
+
+## GCP BigQuery Credentials (for GH Archive)
+
+GH Archive queries require Google Cloud BigQuery credentials. Two options:
+
+### Option 1: JSON File Path
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json
+```
+
+### Option 2: JSON Content in Environment Variable
+
+Useful for `.env` files or CI secrets:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS='{"type":"service_account","project_id":"...","private_key":"..."}'
+```
+
+The client auto-detects JSON content vs file path.
+
+### Setup Steps
+
+1. Create a [Google Cloud Project](https://console.cloud.google.com/)
+2. Enable BigQuery API
+3. Create a Service Account with `BigQuery User` role
+4. Download JSON credentials
+5. Set `GOOGLE_APPLICATION_CREDENTIALS` env var
+
+**Free Tier**: 1 TB/month of BigQuery queries included.
+
+### Using in Code
+
+```python
+# Option A: Via environment variable (recommended)
+factory = EvidenceFactory()  # Uses GOOGLE_APPLICATION_CREDENTIALS
+
+# Option B: Explicit credentials path
+factory = EvidenceFactory(gharchive_credentials="/path/to/creds.json")
+```
+
 ## Requirements
 
 ```bash
@@ -171,3 +235,4 @@ pip install -r requirements.txt
 - `pydantic` - Schema validation
 - `requests` - HTTP client
 - `google-cloud-bigquery` - GH Archive queries (optional)
+- `google-auth` - GCP authentication (optional)
