@@ -225,6 +225,41 @@ class Radare2Wrapper:
 
         return sanitized
 
+    def _normalize_address(self, address) -> str:
+        """
+        Normalize address to consistent hex string format.
+
+        Handles multiple input types from radare2:
+        - int: Convert to hex string (4198400 -> "0x401000")
+        - str (hex): Preserve ("0x401000" -> "0x401000")
+        - str (decimal): Convert to hex ("4198400" -> "0x401000")
+        - None/invalid: Safe default ("0x0")
+
+        Args:
+            address: Address in any format
+
+        Returns:
+            Normalized hex string address (e.g., "0x401000")
+        """
+        if address is None:
+            return "0x0"
+
+        if isinstance(address, int):
+            return hex(address)
+
+        if isinstance(address, str):
+            if address.startswith('0x'):
+                return address  # Already hex format
+            else:
+                try:
+                    return hex(int(address))  # Decimal string -> hex
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid address format: {address}, using 0x0")
+                    return "0x0"
+
+        logger.warning(f"Unexpected address type: {type(address)}, using 0x0")
+        return "0x0"
+
     def analyze(self) -> bool:
         """
         Run initial binary analysis (idempotent).
@@ -334,8 +369,8 @@ class Radare2Wrapper:
             try:
                 # radare2 uses "addr" not "offset" in aflj output
                 addr = func_data.get("addr", func_data.get("offset", 0))
-                # Convert to hex string if integer
-                offset_str = hex(addr) if isinstance(addr, int) else str(addr)
+                # Normalize address to consistent hex string format
+                offset_str = self._normalize_address(addr)
 
                 functions.append(Radare2Function(
                     name=func_data.get("name", "unknown"),
@@ -426,6 +461,25 @@ class Radare2Wrapper:
             except (KeyError, TypeError) as e:
                 logger.debug(f"Failed to parse instruction data: {e}")
                 continue
+
+        # When using backward parameter, radare2 may return duplicate/unsorted instructions
+        # Remove duplicates and sort by address
+        if backward > 0 and instructions:
+            # Deduplicate by offset (preserve first occurrence)
+            seen_offsets = {}
+            unique_instructions = []
+            for insn in instructions:
+                if insn.offset not in seen_offsets:
+                    seen_offsets[insn.offset] = True
+                    unique_instructions.append(insn)
+
+            instructions = unique_instructions
+
+            # Sort by offset (low to high address)
+            try:
+                instructions.sort(key=lambda insn: int(insn.offset, 16) if isinstance(insn.offset, str) and insn.offset.startswith('0x') else int(insn.offset) if isinstance(insn.offset, int) else 0)
+            except (ValueError, TypeError) as e:
+                logger.debug(f"Failed to sort instructions: {e}, returning unsorted")
 
         return instructions
 
